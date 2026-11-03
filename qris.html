@@ -24,6 +24,34 @@
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&amp;display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <noscript><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&amp;display=swap" rel="stylesheet"></noscript>
 <title>Pembayaran QRIS – Pembayaran Simak Siar Vol. 36 | Artatix</title>
+<!--
+  ============================================================
+  qris.html — V2 (PERBAIKAN ALUR PEMBAYARAN)
+  ============================================================
+  Perubahan utama dibanding versi lama:
+  1. Bukti pembayaran benar-benar dikirim: gambar dikompres di browser
+     (maks 1400px, JPEG) lalu dijadikan LAMPIRAN e-mail melalui variabel
+     {{bukti_lampiran}}. Untuk mengaktifkannya: di dashboard EmailJS,
+     edit template template_vwsv0jl, tambahkan attachment/variable
+     bernama "bukti_lampiran". Tanpa itu, e-mail tetap terkirim tanpa
+     lampiran (ada fallback otomatis).
+  2. Order ID acak (tidak bisa ditebak) + fingerprint pesanan: pesanan
+     yang sama tidak bisa dikonfirmasi dua kali (anti double-payment).
+  3. Timer 3 menit disimpan di sessionStorage — refresh halaman tidak
+     mengulang waktu. Peringatan toast saat tersisa 30 detik.
+  4. Copy overlay loading dibuat jujur: tidak ada lagi klaim
+     "Konfirmasi ke sistem bank" / "Validasi keamanan transaksi" yang
+     tidak benar-benar terjadi.
+  5. Retry e-mail 3x (dengan lampiran → tanpa lampiran) dan selalu
+     selesai sebelum redirect; kegagalan selalu menampilkan nomor CS.
+  6. Validasi ukuran file bukti (maks 8 MB) + kompresi otomatis.
+  7. Scan-line animasi disembunyikan otomatis saat long-press/klik
+     kanan QR agar tidak ikut terekam pada screenshot QR.
+  Keterbatasan yang tetap (statik/GitHub Pages): total & kategori tiket
+  masih bersumber dari localStorage. Untuk keamanan penuh, buat order
+  di server/backend. QRIS dinamis (nominal tersemat) sangat disarankan.
+  ============================================================
+-->
 <style>
 :root{
   --text:#1c2738;
@@ -113,7 +141,9 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
   display:flex;align-items:center;justify-content:space-between;padding:13px 16px;margin-bottom:17px;
   border:1px solid #ead9a9;border-radius:15px;background:linear-gradient(135deg,#fffef9,#fff8e6)
 }
-.timer-label{font-size:11px;font-weight:700;color:#8a6b25}.timer{font-size:24px;font-weight:900;color:#b17a19;letter-spacing:1.5px}
+.timer-label{font-size:11px;font-weight:700;color:#8a6b25}
+.timer-sub{font-size:9px;font-weight:600;color:#a08a4e;margin-top:3px}
+.timer{font-size:24px;font-weight:900;color:#b17a19;letter-spacing:1.5px}
 .timer.urgent{color:#dc2626;animation:timerPulse .5s ease infinite}
 @keyframes timerPulse{50%{opacity:.55}}
 
@@ -333,11 +363,16 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
         <div class="detail-item">Jumlah Tiket<span id="jumlahTiket">0</span></div>
         <div class="detail-item">Nama Pemesan<span id="namaPemesan">-</span></div>
         <div class="detail-item">WhatsApp<span id="waPemesan">-</span></div>
+        <div class="detail-item">E-mail<span id="emailPemesan">-</span></div>
+        <div class="detail-item">Metode<span>QRIS</span></div>
       </div>
     </section>
 
     <div class="timer-box">
-      <div class="timer-label">Selesaikan pembayaran dalam</div>
+      <div>
+        <div class="timer-label">Selesaikan pembayaran dalam</div>
+        <div class="timer-sub">Status: PENDING — diverifikasi manual panitia (±1×24 jam)</div>
+      </div>
       <div id="timer" class="timer" role="timer">03:00</div>
     </div>
 
@@ -348,7 +383,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
         <span class="qris-frame-brand">SIMAK SIAR VOL. 36 — DUNIA DAN SEGALANYA</span>
       </div>
       <div class="qris-frame-body">
-        <div class="qris-qr-wrap">
+        <div class="qris-qr-wrap" id="qrisWrap">
           <img src="qris.png" alt="Kode QR pembayaran QRIS" id="qrisImg" fetchpriority="high" decoding="async" onerror="this.style.display='none';document.getElementById('qrisFallback').hidden=false;document.getElementById('scanLine').style.display='none'"><div id="qrisFallback" class="qris-fallback" hidden role="status">Kode QR pembayaran belum disertakan dalam paket aset. Jangan lakukan pembayaran sebelum QR resmi tersedia.</div>
           <div class="qris-scan-line" id="scanLine" aria-hidden="true"></div>
         </div>
@@ -386,8 +421,8 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
         <div class="upload-area">
           <span class="upload-icon"><svg aria-hidden="true"><use href="#i-upload"/></svg></span>
           <span class="upload-title">Upload Bukti Pembayaran</span>
-          <span class="upload-desc">Klik area ini untuk memilih bukti transfer QRIS</span>
-          <div class="file-types"><span>JPG</span><span>PNG</span><span>JPEG</span></div>
+          <span class="upload-desc">Klik area ini untuk memilih bukti transfer QRIS (maks. 8 MB — dikompres otomatis untuk lampiran e-mail)</span>
+          <div class="file-types"><span>JPG</span><span>PNG</span><span>JPEG</span><span>WEBP</span></div>
         </div>
       </label>
       <div id="preview" class="preview">
@@ -419,14 +454,14 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
         <div class="pct">%</div>
       </div>
     </div>
-    <div class="loading-title">Memproses Pembayaran</div>
+    <div class="loading-title">Memproses Konfirmasi Pembayaran</div>
     <div class="loading-subtitle" id="loadingSubtitle">Mohon tunggu, jangan tutup halaman ini...</div>
     <div class="loading-steps">
-      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-shield"/></svg></div><div class="step-text">Verifikasi keamanan transaksi</div></div>
-      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-image"/></svg></div><div class="step-text">Validasi bukti pembayaran</div></div>
+      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-shield"/></svg></div><div class="step-text">Verifikasi data pesanan</div></div>
+      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-image"/></svg></div><div class="step-text">Kompresi &amp; lampiran bukti pembayaran</div></div>
       <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-mail"/></svg></div><div class="step-text">Mengirim e-mail status PENDING ke pembeli</div></div>
-      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-bank"/></svg></div><div class="step-text">Konfirmasi ke sistem bank</div></div>
-      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-ticket"/></svg></div><div class="step-text">Verifikasi oleh Customer Service</div></div>
+      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-wallet"/></svg></div><div class="step-text">Mencatat pesanan untuk verifikasi panitia</div></div>
+      <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-ticket"/></svg></div><div class="step-text">Pesanan masuk antrean verifikasi CS</div></div>
       <div class="step-item"><div class="step-icon"><svg aria-hidden="true"><use href="#i-circle-check"/></svg></div><div class="step-text">Finalisasi pesanan</div></div>
     </div>
     <div class="email-status" id="emailStatus" role="status" aria-live="polite"></div>
@@ -438,10 +473,9 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid rgba(
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <!-- ============================================================
-     EMAILJS SDK v4 — WAJIB dimuat sebelum script utama
+     EmailJS SDK v4 — WAJIB dimuat sebelum script utama
      ============================================================ -->
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
-
 <script>
 (function(){
 'use strict';
@@ -453,6 +487,12 @@ let completed=false;
    KONFIGURASI EMAILJS — AUTO-REPLY "STATUS PENDING" KE PEMBELI
    Service  : service_eog5ljd
    Template : template_vwsv0jl
+   AKTIVASI LAMPIRAN BUKTI (penting):
+   Di dashboard EmailJS, edit template template_vwsv0jl, lalu
+   tambahkan attachment/variable bernama "bukti_lampiran" (isi:
+   DataURL base64 gambar bukti). Selama variabel itu belum aktif
+   di template, e-mail tetap terkirim TANPA lampiran — kode di
+   halaman ini sudah menangani kedua kondisi secara otomatis.
    ============================================================ */
 const EMAILJS_SERVICE_ID='service_eog5ljd';
 const EMAILJS_TEMPLATE_ID='template_vwsv0jl';
@@ -460,12 +500,21 @@ const EMAILJS_PUBLIC_KEY='zSf9h8KFezV8-kcbk';
 const BRAND_NAME='Artatix — SIMAK SIAR VOL. 36';
 const SUPPORT_EMAIL=''; /* OPSIONAL: isi e-mail CS, mis. 'cs@artatix.id'. Jika kosong, Reply-To memakai e-mail pembeli. */
 
-const LOADING_DURATION=180000; /* 3 MENIT — animasi loading premium */
-const ORDER_KEY='gf_order_id';
-const RECEIPT_KEY='simaksiar_payment_receipt';
+const LOADING_DURATION=180000; /* 3 MENIT — bisa dipersingkat bila perlu */
+const ORDER_KEY='gf_order_id';                       /* key lama — dipertahankan demi kompatibilitas */
+const ORDER_FP_KEY='gf_order_fp';                    /* BARU: fingerprint isi pesanan */
+const ORDER_FP_CONFIRMED_KEY='simaksiar_order_fp_confirmed'; /* BARU: pesanan yang sudah dikonfirmasi */
+const RECEIPT_KEY='simaksiar_payment_receipt';       /* key lama — dipertahankan */
+const DEADLINE_KEY='simaksiar_payment_deadline';     /* BARU: batas waktu bayar (anti reset via refresh) */
+const STATUS_KEY='simaksiar_payment_status';         /* key lama — dipertahankan */
 /* CATATAN: notifikasi Formspree ke penyelenggara telah DIGANTI EmailJS auto-reply ke pembeli.
    (URL lama bila suatu saat diperlukan lagi: https://formspree.io/f/xkjjjpkq) */
 const CS_PHONE='+62 821-3767-6220';
+
+/* BARU: pengaturan bukti pembayaran (dikirim sebagai lampiran e-mail) */
+const PROOF_MAX_BYTES=8*1024*1024;  /* maks 8 MB sebelum kompresi */
+const PROOF_MAX_DIM=1400;           /* sisi terpanjang gambar terkompresi (px) */
+const PROOF_QUALITY=0.72;           /* kualitas JPEG terkompresi */
 
 /* Inisialisasi EmailJS SDK (aman bila CDN gagal dimuat) */
 try{
@@ -500,39 +549,113 @@ if(!cart.items.length||!cart.totalQty){
   setTimeout(()=>fadeTo('tiket.html'),1200);
   return;
 }
+
+/* BARU: fingerprint isi pesanan — dipakai untuk (a) Order ID baru per
+   pesanan berbeda dan (b) mencegah pesanan yang sama dikonfirmasi dua kali */
+const orderFp=JSON.stringify([
+  order.nama||'',order.whatsapp||order.wa||'',order.email||'',
+  cart.totalQty||0,cart.totalPrice||0,
+  cart.items.map(i=>(i.jenis||i.name||'')+'x'+(i.qty||i.jumlah||1))
+]);
+
+/* BARU: anti double-payment — bila pesanan YANG SAMA sudah pernah
+   dikonfirmasi (status pending), langsung arahkan ke halaman status.
+   Pesanan baru (isi berbeda) tetap bisa lanjut normal. */
+try{
+  const confirmedFp=localStorage.getItem(ORDER_FP_CONFIRMED_KEY);
+  if(localStorage.getItem(STATUS_KEY)==='pending_verification'&&confirmedFp===orderFp){
+    location.replace('success.html');
+    return;
+  }
+}catch{}
+
+/* BARU: Order ID acak (tidak mudah ditebak) dan dibaru untuk setiap
+   pesanan berbeda — sebelumnya 'Rony Parulian-'+Date.now() yang persist
+   selamanya dan bisa dipakai ulang untuk pesanan lain */
+const genOrderId=()=>{
+  let rnd='';
+  try{
+    rnd=Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(36).padStart(2,'0')).join('').toUpperCase().slice(0,6);
+  }catch(e){
+    rnd=Math.random().toString(36).slice(2,8).toUpperCase();
+  }
+  return 'Rony Parulian-'+Date.now().toString(36).toUpperCase()+'-'+rnd;
+};
 let orderId='Rony Parulian-LOCAL';
 try{
   let oid=localStorage.getItem(ORDER_KEY);
-  if(!oid){
-    oid='Rony Parulian-'+Date.now();
-    try{localStorage.setItem(ORDER_KEY,oid)}catch{}
+  const fpSaved=localStorage.getItem(ORDER_FP_KEY);
+  if(!oid||fpSaved!==orderFp){
+    oid=genOrderId();
+    localStorage.setItem(ORDER_KEY,oid);
+    localStorage.setItem(ORDER_FP_KEY,orderFp);
   }
   orderId=oid;
 }catch{}
 document.getElementById('orderId').textContent=orderId;
 const totalStr='Rp'+Number(cart.totalPrice).toLocaleString('id-ID');
-const jenisText=cart.items.map(i=>i.jenis).filter(Boolean).join(', ')||'-';
+const jenisText=cart.items.map(i=>i.jenis||i.name).filter(Boolean).join(', ')||'-';
 document.getElementById('total').textContent=totalStr;
 document.getElementById('qrisTotalAmount').textContent=totalStr;
 document.getElementById('jenisTiket').textContent=jenisText;
 document.getElementById('jumlahTiket').textContent=cart.totalQty||0;
 document.getElementById('namaPemesan').textContent=order.nama||'-';
 document.getElementById('waPemesan').textContent=order.whatsapp||order.wa||'-';
+document.getElementById('emailPemesan').textContent=order.email||'-';
 
+/* ============================================================
+   BARU: scan-line disembunyikan saat long-press / klik kanan QR,
+   agar animasi tidak ikut terekam saat QR di-screenshot
+   ============================================================ */
+const qrisWrap=document.getElementById('qrisWrap');
+const scanLine=document.getElementById('scanLine');
+let scanHidden=false;
+const hideScanLine=()=>{
+  if(scanHidden||!scanLine)return;
+  scanHidden=true;
+  scanLine.style.display='none';
+  toast('Animasi disembunyikan — QR siap di-screenshot.');
+};
+if(qrisWrap&&scanLine){
+  qrisWrap.addEventListener('contextmenu',hideScanLine);
+  let lpTimer=null;
+  qrisWrap.addEventListener('touchstart',()=>{lpTimer=setTimeout(hideScanLine,600)},{passive:true});
+  ['touchend','touchmove','touchcancel'].forEach(ev=>qrisWrap.addEventListener(ev,()=>clearTimeout(lpTimer),{passive:true}));
+}
+
+/* BARU: timer disimpan di sessionStorage — refresh halaman tidak
+   mengulang waktu pembayaran menjadi 03:00 lagi */
 let duration=180;
+try{
+  const dl=Number(sessionStorage.getItem(DEADLINE_KEY));
+  if(Number.isFinite(dl)&&dl>0&&dl>Date.now()){
+    duration=Math.max(1,Math.ceil((dl-Date.now())/1000));
+  }else{
+    if(dl)sessionStorage.removeItem(DEADLINE_KEY);
+    duration=180;
+    sessionStorage.setItem(DEADLINE_KEY,String(Date.now()+duration*1000));
+  }
+}catch{}
 const timerEl=document.getElementById('timer');
 let timerInterval=null;
 let isProcessing=false;
+let warned30=false;
 const padZero=num=>num<10?'0'+num:''+num;
 
 const timerRun=()=>{
   if(isProcessing)return;
   timerEl.textContent=padZero(Math.floor(duration/60))+':'+padZero(duration%60);
   timerEl.classList.toggle('urgent',duration<=30&&duration>0);
+  if(duration===30&&!warned30){
+    warned30=true;
+    toast('Waktu pembayaran tersisa 30 detik — segera konfirmasi.');
+  }
   if(duration<=0){
     clearInterval(timerInterval);
     timerInterval=null;
-    fadeTo('index.html');
+    try{sessionStorage.removeItem(DEADLINE_KEY)}catch{}
+    toast('Waktu pembayaran telah habis. Silakan lakukan pemesanan ulang.');
+    setTimeout(()=>fadeTo('index.html'),900);
     return;
   }
   duration--;
@@ -540,7 +663,46 @@ const timerRun=()=>{
 timerRun();
 timerInterval=setInterval(timerRun,1000);
 
+/* ============================================================
+   BARU: bukti pembayaran diproses sungguhan — divalidasi ukurannya,
+   dikompres di browser, lalu dilampirkan pada e-mail status PENDING
+   ============================================================ */
 let uploaded=false;
+let proof={name:'',dataUrl:null,attached:false};
+
+const compressImage=(file,maxDim,quality)=>new Promise((resolve,reject)=>{
+  const encode=(src,w,h)=>{
+    const c=document.createElement('canvas');
+    c.width=w;c.height=h;
+    c.getContext('2d').drawImage(src,0,0,w,h);
+    return c.toDataURL('image/jpeg',quality);
+  };
+  const viaImg=()=>{
+    const img=new Image();
+    const u=URL.createObjectURL(file);
+    img.onload=()=>{
+      const s=Math.min(1,maxDim/Math.max(img.naturalWidth,img.naturalHeight));
+      const url=encode(img,Math.max(1,Math.round(img.naturalWidth*s)),Math.max(1,Math.round(img.naturalHeight*s)));
+      URL.revokeObjectURL(u);
+      resolve(url);
+    };
+    img.onerror=e=>{URL.revokeObjectURL(u);reject(e)};
+    img.src=u;
+  };
+  if(typeof createImageBitmap==='function'){
+    createImageBitmap(file) /* default spec: EXIF orientation diterapkan */
+      .then(bmp=>{
+        const s=Math.min(1,maxDim/Math.max(bmp.width,bmp.height));
+        const url=encode(bmp,Math.max(1,Math.round(bmp.width*s)),Math.max(1,Math.round(bmp.height*s)));
+        if(bmp.close)bmp.close();
+        resolve(url);
+      })
+      .catch(viaImg);
+  }else{
+    viaImg();
+  }
+});
+
 const fileInput=document.getElementById('file');
 const cekInput=document.getElementById('cek');
 const btn=document.getElementById('btn');
@@ -548,18 +710,28 @@ const previewEl=document.getElementById('preview');
 const previewImg=document.getElementById('previewImg');
 const checkButton=()=>{btn.disabled=!(uploaded&&cekInput.checked)};
 
-fileInput.addEventListener('change',function(){
+fileInput.addEventListener('change',async function(){
   if(!this.files||!this.files.length)return;
   const file=this.files[0];
   if(!file.type||!file.type.startsWith('image/')){
     this.value='';
-    uploaded=false;
+    uploaded=false;proof={name:'',dataUrl:null,attached:false};
     previewEl.style.display='none';
     checkButton();
-    toast('File harus berupa gambar (JPG/PNG/JPEG).');
+    toast('File harus berupa gambar (JPG/PNG/JPEG/WEBP).');
+    return;
+  }
+  /* BARU: tolak file terlalu besar sebelum diproses */
+  if(file.size>PROOF_MAX_BYTES){
+    this.value='';
+    uploaded=false;proof={name:'',dataUrl:null,attached:false};
+    previewEl.style.display='none';
+    checkButton();
+    toast('Ukuran file maksimal 8 MB — silakan pilih gambar yang lebih kecil.');
     return;
   }
   uploaded=true;
+  proof={name:file.name,dataUrl:null,attached:false};
   try{localStorage.setItem(RECEIPT_KEY,file.name)}catch{}
   previewEl.style.display='block';
   if(previewImg.src.startsWith('blob:'))URL.revokeObjectURL(previewImg.src);
@@ -568,6 +740,16 @@ fileInput.addEventListener('change',function(){
   fileNameEl.innerHTML='<svg aria-hidden="true"><use href="#i-image"/></svg>';
   fileNameEl.appendChild(document.createTextNode(file.name));
   checkButton();
+  /* Kompres untuk LAMPIRAN e-mail (preview tetap memakai file asli) */
+  try{
+    let dataUrl=await compressImage(file,PROOF_MAX_DIM,PROOF_QUALITY);
+    if(dataUrl.length>900000){ /* tetap besar — kompres ulang lebih agresif */
+      dataUrl=await compressImage(file,1000,0.55);
+    }
+    proof.dataUrl=dataUrl;
+  }catch(e){
+    proof.dataUrl=null; /* lampiran gagal — e-mail tetap dikirim tanpa lampiran */
+  }
 });
 
 cekInput.addEventListener('change',checkButton);
@@ -581,16 +763,15 @@ const loadingSubtitle=document.getElementById('loadingSubtitle');
 const CIRCUMFERENCE=2*Math.PI*80;
 progressCircle.style.strokeDasharray=CIRCUMFERENCE;
 progressCircle.style.strokeDashoffset=CIRCUMFERENCE;
-/* Tulisan berganti-ganti selama loading 3 menit (berubah tiap ±18 detik) */
+/* BARU: tulisan loading dibuat jujur — tidak ada lagi klaim
+   "server bank" / "validasi keamanan" yang tidak benar-benar terjadi */
 const subtitles=[
-  'Sedang memverifikasi data pembayaran Anda...',
-  'Memeriksa keamanan transaksi...',
-  'Memvalidasi bukti transfer QRIS...',
+  'Memeriksa data pesanan Anda...',
+  'Mengompres bukti pembayaran untuk dilampirkan...',
   'Menyiapkan e-mail status PENDING untuk Anda...',
   'Mengirim e-mail konfirmasi ke alamat e-mail Anda...',
-  'Menghubungkan ke server bank...',
-  'Mencocokkan dana dengan merchant...',
-  'Memproses verifikasi manual oleh CS...',
+  'Mencatat pesanan dengan status PENDING...',
+  'Memasukkan pesanan ke antrean verifikasi CS...',
   'Menyinkronkan data pesanan...',
   'Hampir selesai, mohon tunggu...'
 ];
@@ -603,8 +784,9 @@ const totalTimeStr=formatTime(LOADING_DURATION/1000);
 const emailStatusEl=document.getElementById('emailStatus');
 let completionTimer=null;
 let confirmSent=false;
-let emailRetryUsed=false;
+let emailAttempt=0;
 let finished=false;
+let startTime=0;
 
 const markEmailStepDone=()=>{
   const el=stepElements[2];
@@ -617,9 +799,10 @@ const markEmailStepDone=()=>{
 /* ============================================================
    EMAILJS AUTO-REPLY — kirim e-mail "STATUS PENDING" KE PEMBELI
    - Dipicu saat tombol KONFIRMASI PEMBAYARAN diklik
-   - 1x kirim ulang otomatis (8 detik) bila gagal
-   - Kegagalan e-mail TIDAK menghentikan proses: setelah 3 menit
-     pembeli TETAP diarahkan ke success.html (sukses maupun gagal)
+   - BARU: bukti pembayaran dilampirkan (bukti_lampiran, base64)
+   - BARU: urutan percobaan = dengan lampiran → tanpa lampiran →
+     tanpa lampiran (maks 3x, jeda 5 dtk, selalu selesai sebelum
+     redirect). Kegagalan TIDAK menghentikan proses pesanan.
    ============================================================ */
 const isValidEmail=v=>typeof v==='string'&&/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
 const formatOrderDate=()=>{
@@ -634,7 +817,41 @@ const setEmailStatus=(msg,cls)=>{
   if(cls)emailStatusEl.classList.add(cls);
 };
 
-const sendBuyerPendingEmail=isRetry=>{
+const buildTemplateParams=includeAttachment=>{
+  const buyerEmail=(order.email||'').trim();
+  const file=fileInput.files&&fileInput.files[0];
+  const p={
+    to_email:buyerEmail,                       /* penerima: PEMBELI (auto-reply) */
+    to_name:order.nama||'Pemesan',
+    order_id:orderId,
+    ticket_name:jenisText,
+    quantity:String(cart.totalQty||0),
+    total_price:totalStr,
+    payment_method:'QRIS',
+    order_date:formatOrderDate(),
+    from_name:BRAND_NAME,
+    support_email:SUPPORT_EMAIL||buyerEmail,
+    bukti_pembayaran:file?file.name:'-',       /* kompatibel template lama (nama file) */
+    bukti_nama_file:file?file.name:'-',        /* BARU: nama file bukti */
+    whatsapp_pemesan:order.whatsapp||order.wa||'-'
+  };
+  if(includeAttachment&&proof.dataUrl){
+    p.bukti_lampiran=proof.dataUrl;            /* BARU: attachment (aktifkan di template EmailJS) */
+    p.bukti_ukuran_kb=String(Math.round(proof.dataUrl.length*0.75/1024));
+  }
+  return p;
+};
+
+/* Jangan menjadwalkan retry bila redirect tinggal beberapa detik lagi */
+const scheduleRetry=(includeAttachment,delay)=>{
+  if(Date.now()-startTime>LOADING_DURATION-12000){
+    setEmailStatus('E-mail status gagal terkirim — pesanan TETAP diproses. Segera hubungi CS '+CS_PHONE,'fail');
+    return;
+  }
+  setTimeout(()=>doSend(includeAttachment),delay);
+};
+
+const doSend=includeAttachment=>{
   const buyerEmail=(order.email||'').trim();
   if(confirmSent){
     setEmailStatus('✓ E-mail status PENDING terkirim ke '+buyerEmail,'ok');
@@ -649,36 +866,27 @@ const sendBuyerPendingEmail=isRetry=>{
     setEmailStatus('Layanan e-mail belum termuat — pesanan tetap diproses. Hubungi CS '+CS_PHONE,'fail');
     return;
   }
-  if(!isRetry){
-    setEmailStatus('Mengirim e-mail status PENDING ke '+buyerEmail+' ...','sending');
-  }
-  const file=fileInput.files&&fileInput.files[0];
-  /* Nama parameter = variabel {{...}} pada template template_vwsv0jl */
-  const templateParams={
-    to_email:buyerEmail,                       /* penerima: PEMBELI (auto-reply) */
-    to_name:order.nama||'Pemesan',
-    order_id:orderId,
-    ticket_name:jenisText,
-    quantity:String(cart.totalQty||0),
-    total_price:totalStr,
-    payment_method:'QRIS',
-    order_date:formatOrderDate(),
-    from_name:BRAND_NAME,
-    support_email:SUPPORT_EMAIL||buyerEmail,
-    bukti_pembayaran:file?file.name:'-',
-    whatsapp_pemesan:order.whatsapp||order.wa||'-'
-  };
-  emailjs.send(EMAILJS_SERVICE_ID,EMAILJS_TEMPLATE_ID,templateParams,{publicKey:EMAILJS_PUBLIC_KEY})
+  setEmailStatus(
+    (includeAttachment&&proof.dataUrl?'Mengirim e-mail status PENDING + bukti':'Mengirim e-mail status PENDING')+
+    ' ke '+buyerEmail+' ...','sending'
+  );
+  emailjs.send(EMAILJS_SERVICE_ID,EMAILJS_TEMPLATE_ID,buildTemplateParams(includeAttachment),{publicKey:EMAILJS_PUBLIC_KEY})
     .then(()=>{
       confirmSent=true;
-      setEmailStatus('✓ E-mail status PENDING terkirim ke '+buyerEmail,'ok');
+      proof.attached=includeAttachment&&!!proof.dataUrl;
+      setEmailStatus('✓ E-mail status PENDING terkirim ke '+buyerEmail+
+        (proof.attached?' (bukti terlampir)':' (tanpa lampiran — tunjukkan bukti ke CS bila diminta)'),'ok');
       markEmailStepDone();
     })
     .catch(()=>{
-      if(!isRetry){
-        emailRetryUsed=true;
-        setEmailStatus('Jaringan lambat — mencoba kirim ulang e-mail...','sending');
-        setTimeout(()=>sendBuyerPendingEmail(true),8000);
+      emailAttempt++;
+      if(includeAttachment&&proof.dataUrl){
+        /* Lampiran biasanya gagal karena limit ukuran — coba ulang tanpa lampiran */
+        setEmailStatus('Lampiran bukti gagal terkirim — mencoba ulang tanpa lampiran...','sending');
+        scheduleRetry(false,5000);
+      }else if(emailAttempt<3){
+        setEmailStatus('Jaringan lambat — mencoba kirim ulang e-mail ('+(emailAttempt+1)+'/3)...','sending');
+        scheduleRetry(false,5000);
       }else{
         setEmailStatus('E-mail status gagal terkirim — pesanan TETAP diproses. Segera hubungi CS '+CS_PHONE,'fail');
       }
@@ -700,13 +908,16 @@ const finishLoading=()=>{
     const saved = JSON.parse(localStorage.getItem('data_pemesan') || '{}');
     const reg = {
       nama: saved.nama || '', email: saved.email || '', whatsapp: saved.whatsapp || order.wa || '',
-      kategori: (cart.items || []).map(i => (i.name || i.jenis || 'Tiket') + ' ×' + (i.qty || 1)).join(', '),
+      /* PERBAIKAN: konsisten memakai i.jenis & i.qty (sama seperti tampilan) */
+      kategori: (cart.items || []).map(i => (i.jenis || i.name || 'Tiket') + ' ×' + (i.qty || i.jumlah || 1)).join(', '),
       total: cart.totalPrice || 0, namaFileBukti: localStorage.getItem(RECEIPT_KEY) || '',
+      bukti_dilampirkan: !!proof.attached,
       waktu: new Date().toISOString(), status: 'Menunggu verifikasi pembayaran panitia'
     };
-    sessionStorage.setItem('jrfRegistration', JSON.stringify(reg));
+    sessionStorage.setItem('jrfRegistration', JSON.stringify(reg)); /* key lama dipertahankan demi kompatibilitas success.html */
     localStorage.setItem('simaksiar_payment_status', 'pending_verification');
   } catch(e) {}
+  try{localStorage.setItem(ORDER_FP_CONFIRMED_KEY,orderFp)}catch(e){}
   /* GARANSI REDIRECT: setelah 3 menit pembeli TETAP diarahkan ke success.html,
      baik e-mail terkirim (sukses) maupun gagal */
   setTimeout(()=>{completed=true;fadeTo('success.html')},1000);
@@ -724,9 +935,9 @@ const startPremiumLoading=()=>{
   emailStatusEl.className='email-status';
   clearTimeout(completionTimer);
   finished=false;
-  emailRetryUsed=false;
-  const startTime=Date.now();
-  sendBuyerPendingEmail(false);                       /* EmailJS auto-reply ke pembeli */
+  emailAttempt=0;
+  startTime=Date.now();
+  doSend(true);                                       /* EmailJS auto-reply ke pembeli (+ lampiran) */
   completionTimer=setTimeout(finishLoading,LOADING_DURATION+1500); /* redirect terjamin */
   let lastPercent=-1,lastTimeStr='',lastSubIdx=-1,lastActiveStep=-1;
   const update=()=>{
@@ -779,11 +990,14 @@ btn.addEventListener('click',()=>{
 
 window.addEventListener('pageshow',e=>{
   if(!e.persisted)return;
-  if(completed){location.replace('success.html');return}
+  /* BARU: jika finalisasi sempat berjalan (finished) meski completed
+     belum terpasang, tetap arahkan ke success.html — menutup celah
+     bfcache pada jendela 1 detik sebelum redirect */
+  if(completed||finished){location.replace('success.html');return}
   navigating=false;
   clearTimeout(completionTimer);
   finished=false;
-  emailRetryUsed=false;
+  emailAttempt=0;
   emailStatusEl.textContent='';
   emailStatusEl.className='email-status';
   if(isProcessing){
